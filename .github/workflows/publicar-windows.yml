@@ -26,12 +26,21 @@ jobs:
       version: ${{ steps.metadata.outputs.version }}
       source_sha: ${{ steps.metadata.outputs.source_sha }}
     steps:
-      - uses: actions/checkout@v4
+      - name: Comprobar acceso al código privado
+        shell: pwsh
+        env:
+          CODE_READ_TOKEN: ${{ secrets.PROTONE_CODE_READ_TOKEN }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:CODE_READ_TOKEN)) {
+            throw 'Falta el secreto PROTONE_CODE_READ_TOKEN en Protone-descargas. Crea un token de solo lectura (Contents: Read-only) para protone-codigo y guárdalo como secreto de Actions.'
+          }
+      - uses: actions/checkout@v6
         with:
           repository: fgilalar/protone-codigo
           ref: ${{ inputs.source_ref }}
+          token: ${{ secrets.PROTONE_CODE_READ_TOKEN }}
           persist-credentials: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: '22'
       - name: Identificar versión y revisión
