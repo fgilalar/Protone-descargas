@@ -1,0 +1,107 @@
+name: Compilar y publicar Protone para Windows
+run-name: Protone Windows · ${{ inputs.source_ref }}
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Rama, etiqueta o SHA de fgilalar/protone-codigo (usar el SHA para reproducir una versión)
+        required: true
+        default: main
+        type: string
+      publish:
+        description: Publicar una nueva Release estable al terminar (no reemplaza versiones existentes)
+        required: true
+        default: true
+        type: boolean
+permissions:
+  contents: read
+concurrency:
+  group: protone-windows-release
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    outputs:
+      version: ${{ steps.metadata.outputs.version }}
+      source_sha: ${{ steps.metadata.outputs.source_sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: fgilalar/protone-codigo
+          ref: ${{ inputs.source_ref }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Identificar versión y revisión
+        id: metadata
+        shell: pwsh
+        run: |
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          if ($version -notmatch '^\d+\.\d+\.\d+$') { throw 'Solo se publican versiones estables X.Y.Z' }
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "source_sha=$(git rev-parse HEAD)" >> $env:GITHUB_OUTPUT
+      - name: Instalar dependencias
+        run: npm install --no-audit --no-fund
+      - name: Ejecutar pruebas
+        run: npm test
+      - name: Compilar instalador
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: npm run dist -- --publish never
+      - name: Preparar comprobación de integridad
+        shell: pwsh
+        run: |
+          if (!(Test-Path dist/Protone-Setup.exe)) { throw 'No se ha generado Protone-Setup.exe' }
+          $hash = (Get-FileHash dist/Protone-Setup.exe -Algorithm SHA256).Hash.ToLower()
+          "$hash  Protone-Setup.exe" | Set-Content dist/SHA256SUMS.txt -Encoding ascii
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Protone-Windows-${{ steps.metadata.outputs.version }}
+          path: |
+            dist/Protone-Setup.exe
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 30
+  publish:
+    if: ${{ inputs.publish }}
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: Protone-Windows-${{ needs.build.outputs.version }}
+          path: installer
+      - name: Publicar en Protone-descargas
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: fgilalar/Protone-descargas
+          VERSION: ${{ needs.build.outputs.version }}
+          SOURCE_SHA: ${{ needs.build.outputs.source_sha }}
+          TARGET_SHA: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="v${VERSION}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "La versión $tag ya existe. No se reemplazará; incrementa la versión del código."
+            exit 1
+          fi
+          cat > notes.md <<NOTES
+          Protone ${VERSION} — Haz que suene.
+
+          Descarga **Protone-Setup.exe** para instalar la aplicación en Windows.
+          Se incluye **SHA256SUMS.txt** para comprobar la integridad del instalador.
+
+          Código utilizado: https://github.com/fgilalar/protone-codigo/commit/${SOURCE_SHA}
+          Novedades: https://github.com/fgilalar/protone-codigo/blob/${SOURCE_SHA}/CAMBIOS.md
+
+          Esta versión guarda proyectos .protone y permite abrir proyectos anteriores .json.
+          El instalador no tiene firma digital.
+          NOTES
+          gh release create "$tag" installer/Protone-Setup.exe installer/SHA256SUMS.txt --target "$TARGET_SHA" --title "Protone ${VERSION}" --notes-file notes.md --draft
+          gh release edit "$tag" --draft=false --latest
