@@ -28,6 +28,7 @@ jobs:
     outputs:
       version: ${{ steps.metadata.outputs.version }}
       source_sha: ${{ steps.metadata.outputs.source_sha }}
+      prerelease: ${{ steps.metadata.outputs.prerelease }}
     steps:
       - name: Leer configuración de publicación
         uses: actions/checkout@v6
@@ -64,8 +65,9 @@ jobs:
         shell: pwsh
         run: |
           $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
-          if ($version -notmatch '^\d+\.\d+\.\d+$') { throw 'Solo se publican versiones estables X.Y.Z' }
+          if ($version -notmatch '^\d+\.\d+\.\d+(-rc\.[1-9]\d*)?$') { throw 'Version no valida: usa X.Y.Z o X.Y.Z-rc.N' }
           if ($env:EXPECTED_VERSION -and $version -ne $env:EXPECTED_VERSION) { throw 'La versión del código no coincide con la orden de publicación' }
+          "prerelease=$($version.Contains('-rc.').ToString().ToLower())" >> $env:GITHUB_OUTPUT
           "version=$version" >> $env:GITHUB_OUTPUT
           "source_sha=$(git rev-parse HEAD)" >> $env:GITHUB_OUTPUT
       - name: Instalar dependencias
@@ -107,6 +109,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: fgilalar/Protone-descargas
           VERSION: ${{ needs.build.outputs.version }}
+          IS_PRERELEASE: ${{ needs.build.outputs.prerelease }}
           SOURCE_SHA: ${{ needs.build.outputs.source_sha }}
           TARGET_SHA: ${{ github.sha }}
         shell: bash
@@ -129,5 +132,18 @@ jobs:
           Esta versión guarda proyectos .protone y permite abrir proyectos anteriores .json.
           El instalador no tiene firma digital.
           NOTES
-          gh release create "$tag" installer/Protone-Setup.exe installer/SHA256SUMS.txt --target "$TARGET_SHA" --title "Protone ${VERSION}" --notes-file notes.md --draft
-          gh release edit "$tag" --draft=false --latest
+          if [[ "$IS_PRERELEASE" == "true" ]]; then
+            cat >> notes.md <<'NOTES'
+
+          **Candidata a 1.0 para pruebas de estabilidad. No es la versión estable.**
+          Mismas funciones que 0.10.2; no incluye funciones nuevas.
+          Haz una copia del proyecto antes de probar. El instalador utiliza la misma aplicación y puede sustituir la versión instalada.
+          Comprueba reproducción prolongada en ambos canales, proyectos, atajos, salidas, copias y actualización.
+          La descarga Latest sigue siendo la versión estable.
+          NOTES
+            gh release create "$tag" installer/Protone-Setup.exe installer/SHA256SUMS.txt --target "$TARGET_SHA" --title "Protone ${VERSION} — Candidata a 1.0" --notes-file notes.md --draft --prerelease --latest=false
+            gh release edit "$tag" --draft=false --prerelease --latest=false
+          else
+            gh release create "$tag" installer/Protone-Setup.exe installer/SHA256SUMS.txt --target "$TARGET_SHA" --title "Protone ${VERSION}" --notes-file notes.md --draft
+            gh release edit "$tag" --draft=false --latest
+          fi
