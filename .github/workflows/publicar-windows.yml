@@ -1,6 +1,9 @@
 name: Compilar y publicar Protone para Windows
-run-name: Protone Windows · ${{ inputs.source_ref }}
+run-name: Protone Windows · ${{ inputs.source_ref || 'orden de publicación' }}
 on:
+  push:
+    branches: [publicar-instalador]
+    paths: ['.github/publicacion.json']
   workflow_dispatch:
     inputs:
       source_ref:
@@ -26,6 +29,17 @@ jobs:
       version: ${{ steps.metadata.outputs.version }}
       source_sha: ${{ steps.metadata.outputs.source_sha }}
     steps:
+      - name: Leer configuración de publicación
+        uses: actions/checkout@v6
+        with:
+          path: .release-control
+          persist-credentials: false
+      - name: Resolver orden de publicación
+        id: request
+        env:
+          RELEASE_EVENT: ${{ github.event_name }}
+          MANUAL_SOURCE_REF: ${{ inputs.source_ref }}
+        run: node .release-control/scripts/resolve-publication.cjs
       - name: Comprobar acceso al código privado
         shell: pwsh
         env:
@@ -37,7 +51,7 @@ jobs:
       - uses: actions/checkout@v6
         with:
           repository: fgilalar/protone-codigo
-          ref: ${{ inputs.source_ref }}
+          ref: ${{ steps.request.outputs.source_ref }}
           token: ${{ secrets.PROTONE_CODE_READ_TOKEN }}
           persist-credentials: false
       - uses: actions/setup-node@v6
@@ -45,10 +59,13 @@ jobs:
           node-version: '22'
       - name: Identificar versión y revisión
         id: metadata
+        env:
+          EXPECTED_VERSION: ${{ steps.request.outputs.expected_version }}
         shell: pwsh
         run: |
           $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
           if ($version -notmatch '^\d+\.\d+\.\d+$') { throw 'Solo se publican versiones estables X.Y.Z' }
+          if ($env:EXPECTED_VERSION -and $version -ne $env:EXPECTED_VERSION) { throw 'La versión del código no coincide con la orden de publicación' }
           "version=$version" >> $env:GITHUB_OUTPUT
           "source_sha=$(git rev-parse HEAD)" >> $env:GITHUB_OUTPUT
       - name: Instalar dependencias
@@ -74,7 +91,7 @@ jobs:
           if-no-files-found: error
           retention-days: 30
   publish:
-    if: ${{ inputs.publish }}
+    if: ${{ github.event_name == 'push' || inputs.publish }}
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 10
