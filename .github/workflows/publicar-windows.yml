@@ -12,7 +12,7 @@ on:
         default: main
         type: string
       publish:
-        description: Publicar una nueva Release estable al terminar (no reemplaza versiones existentes)
+        description: Publicar una nueva Release al terminar (no reemplaza versiones existentes)
         required: true
         default: true
         type: boolean
@@ -28,10 +28,9 @@ jobs:
     outputs:
       version: ${{ steps.metadata.outputs.version }}
       source_sha: ${{ steps.metadata.outputs.source_sha }}
-      prerelease: ${{ steps.metadata.outputs.prerelease }}
     steps:
       - name: Leer configuración de publicación
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           path: .release-control
           persist-credentials: false
@@ -49,15 +48,15 @@ jobs:
           if ([string]::IsNullOrWhiteSpace($env:CODE_READ_TOKEN)) {
             throw 'Falta el secreto PROTONE_CODE_READ_TOKEN en Protone-descargas. Crea un token de solo lectura (Contents: Read-only) para protone-codigo y guárdalo como secreto de Actions.'
           }
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           repository: fgilalar/protone-codigo
           ref: ${{ steps.request.outputs.source_ref }}
           token: ${{ secrets.PROTONE_CODE_READ_TOKEN }}
           persist-credentials: false
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
-          node-version: '22'
+          node-version: '24'
       - name: Identificar versión y revisión
         id: metadata
         env:
@@ -65,31 +64,37 @@ jobs:
         shell: pwsh
         run: |
           $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
-          if ($version -notmatch '^\d+\.\d+\.\d+(-rc\.[1-9]\d*)?$') { throw 'Version no valida: usa X.Y.Z o X.Y.Z-rc.N' }
+          if ($version -notmatch '^\d+\.\d+\.\d+(-rc\.\d+)?$') { throw 'Usa X.Y.Z o X.Y.Z-rc.N' }
           if ($env:EXPECTED_VERSION -and $version -ne $env:EXPECTED_VERSION) { throw 'La versión del código no coincide con la orden de publicación' }
-          "prerelease=$($version.Contains('-rc.').ToString().ToLower())" >> $env:GITHUB_OUTPUT
           "version=$version" >> $env:GITHUB_OUTPUT
           "source_sha=$(git rev-parse HEAD)" >> $env:GITHUB_OUTPUT
       - name: Instalar dependencias
-        run: npm install --no-audit --no-fund
+        run: npm ci --no-audit --no-fund
       - name: Ejecutar pruebas
         run: npm test
       - name: Compilar instalador
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
         run: npm run dist -- --publish never
+      - name: Inventario de dependencias de compilación
+        run: npm sbom --sbom-format cyclonedx > dist/SBOM.cdx.json
       - name: Preparar comprobación de integridad
         shell: pwsh
         run: |
           if (!(Test-Path dist/Protone-Setup.exe)) { throw 'No se ha generado Protone-Setup.exe' }
           $hash = (Get-FileHash dist/Protone-Setup.exe -Algorithm SHA256).Hash.ToLower()
-          "$hash  Protone-Setup.exe" | Set-Content dist/SHA256SUMS.txt -Encoding ascii
-      - uses: actions/upload-artifact@v4
+          $files = 'Protone-Setup.exe','SBOM.cdx.json'
+          $records = foreach ($file in $files) { $h = (Get-FileHash "dist/$file" -Algorithm SHA256).Hash.ToLower(); "$h  $file" }
+          $records | Set-Content dist/SHA256SUMS.txt -Encoding ascii
+          @{schema=1;application='Protone';version='${{ steps.metadata.outputs.version }}';source_sha='${{ steps.metadata.outputs.source_sha }}';runner=$env:RUNNER_OS;node=(node --version);lock_sha256=(Get-FileHash package-lock.json -Algorithm SHA256).Hash.ToLower();installer_sha256=$hash} | ConvertTo-Json | Set-Content dist/provenance.json -Encoding utf8
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: Protone-Windows-${{ steps.metadata.outputs.version }}
           path: |
             dist/Protone-Setup.exe
             dist/SHA256SUMS.txt
+            dist/SBOM.cdx.json
+            dist/provenance.json
           if-no-files-found: error
           retention-days: 30
   publish:
@@ -100,7 +105,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: Protone-Windows-${{ needs.build.outputs.version }}
           path: installer
@@ -109,7 +114,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: fgilalar/Protone-descargas
           VERSION: ${{ needs.build.outputs.version }}
-          IS_PRERELEASE: ${{ needs.build.outputs.prerelease }}
           SOURCE_SHA: ${{ needs.build.outputs.source_sha }}
           TARGET_SHA: ${{ github.sha }}
         shell: bash
@@ -132,18 +136,7 @@ jobs:
           Esta versión guarda proyectos .protone y permite abrir proyectos anteriores .json.
           El instalador no tiene firma digital.
           NOTES
-          if [[ "$IS_PRERELEASE" == "true" ]]; then
-            cat >> notes.md <<'NOTES'
-
-          **Candidata a 1.0 para pruebas de estabilidad. No es la versión estable.**
-          Mismas funciones que 0.10.2; no incluye funciones nuevas.
-          Haz una copia del proyecto antes de probar. El instalador utiliza la misma aplicación y puede sustituir la versión instalada.
-          Comprueba reproducción prolongada en ambos canales, proyectos, atajos, salidas, copias y actualización.
-          La descarga Latest sigue siendo la versión estable.
-          NOTES
-            gh release create "$tag" installer/Protone-Setup.exe installer/SHA256SUMS.txt --target "$TARGET_SHA" --title "Protone ${VERSION} — Candidata a 1.0" --notes-file notes.md --draft --prerelease --latest=false
-            gh release edit "$tag" --draft=false --prerelease --latest=false
-          else
-            gh release create "$tag" installer/Protone-Setup.exe installer/SHA256SUMS.txt --target "$TARGET_SHA" --title "Protone ${VERSION}" --notes-file notes.md --draft
-            gh release edit "$tag" --draft=false --latest
-          fi
+          extra=(--latest)
+          if [[ "$VERSION" == *-rc.* ]]; then extra=(--prerelease --latest=false); fi
+          gh release create "$tag" installer/Protone-Setup.exe installer/SHA256SUMS.txt installer/SBOM.cdx.json installer/provenance.json "${extra[@]}" --target "$TARGET_SHA" --title "Protone ${VERSION}" --notes-file notes.md --draft
+          gh release edit "$tag" --draft=false "${extra[@]}"

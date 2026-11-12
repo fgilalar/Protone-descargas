@@ -7,7 +7,7 @@ function resolvePublication(event,manualRef,request){
  }
  if(event!=='push')throw Error('Evento de publicación no admitido.');
  if(!request||typeof request.source_sha!=='string'||!/^[a-f0-9]{40}$/.test(request.source_sha))throw Error('La orden debe indicar un source_sha completo de 40 caracteres.');
- if(typeof request.version!=='string'||!/^\d+\.\d+\.\d+(?:-rc\.[1-9]\d*)?$/.test(request.version))throw Error('La orden debe indicar X.Y.Z o X.Y.Z-rc.N.');
+ if(typeof request.version!=='string'||!/^\d+\.\d+\.\d+(?:-rc\.\d+)?$/.test(request.version))throw Error('La orden debe indicar X.Y.Z o X.Y.Z-rc.N.');
  return {source_ref:request.source_sha,expected_version:request.version};
 }
 if(require.main===module){
